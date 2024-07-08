@@ -11,20 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: disable=missing-module-docstring
+import boto3
 import collections
 import datetime
-import boto3
 
-def lambda_handler(event, context): # pylint: disable=unused-argument
-    """
-    This function creates snapshots of AWS EBS volumes attached to AWS EC2 instances
-    that have a "Backup" tag containing either 'true', 'yes', or '1'.
-    This function should be run at least daily.
-    """
-    ec2_client = boto3.client('ec2')
+ec = boto3.client('ec2')
 
-    reservations = ec2_client.describe_instances(
+def lambda_handler(event, context):
+    reservations = ec.describe_instances(
         Filters=[
             {'Name': 'tag:Backup', 'Values': ['true', 'yes', '1']},
         ]
@@ -32,11 +26,13 @@ def lambda_handler(event, context): # pylint: disable=unused-argument
         'Reservations', []
     )
 
-    instances = [
-        instance for reservation in reservations for instance in reservation['Instances']
-    ]
+    instances = sum(
+        [
+            [i for i in r['Instances']]
+            for r in reservations
+        ], [])
 
-    print(f"Found {str(len(instances))} instances that need backing up")
+    print "Found %d instances that need backing up" % len(instances)
 
     to_tag = collections.defaultdict(list)
 
@@ -52,25 +48,28 @@ def lambda_handler(event, context): # pylint: disable=unused-argument
             if dev.get('Ebs', None) is None:
                 continue
             vol_id = dev['Ebs']['VolumeId']
-            print(f"Found EBS volume {vol_id} on instance {instance['InstanceId']}")
+            print "Found EBS volume %s on instance %s" % (
+                vol_id, instance['InstanceId'])
 
-            snap = ec2_client.create_snapshot(
+            snap = ec.create_snapshot(
                 VolumeId=vol_id,
             )
 
             to_tag[retention_days].append(snap['SnapshotId'])
 
-            print(
-                f"Retaining snapshot {snap['SnapshotId']} of volume {vol_id} "
-                f"from instance {instance['InstanceId']} for {str(retention_days)} days"
+            print "Retaining snapshot %s of volume %s from instance %s for %d days" % (
+                snap['SnapshotId'],
+                vol_id,
+                instance['InstanceId'],
+                retention_days,
             )
 
 
-    for retention_days in to_tag.keys(): # pylint: disable=consider-using-dict-items
+    for retention_days in to_tag.keys():
         delete_date = datetime.date.today() + datetime.timedelta(days=retention_days)
         delete_fmt = delete_date.strftime('%Y-%m-%d')
-        print(f"Will delete {str(len(to_tag[retention_days]))} snapshots on {delete_fmt}")
-        ec2_client.create_tags(
+        print "Will delete %d snapshots on %s" % (len(to_tag[retention_days]), delete_fmt)
+        ec.create_tags(
             Resources=to_tag[retention_days],
             Tags=[
                 {'Key': 'DeleteOn', 'Value': delete_fmt},
